@@ -1,0 +1,141 @@
+name: update-and-build
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REPO: https://git.earthnet.ch/simon.beck/nix-config.git
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone nix-config from earthnet
+        run: git clone --depth 1 "$REPO" .
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Update flake inputs
+        run: nix flake update
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flake-lock
+          path: flake.lock
+
+  build:
+    needs: update
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            targets: .#darwinConfigurations.nixbook.system .#darwinConfigurations.vshnbook.system
+          - os: ubuntu-24.04-arm
+            targets: .#homeConfigurations.vscode.activationPackage
+          - os: ubuntu-latest
+            targets: .#nixosConfigurations.t2.config.system.build.toplevel .#homeConfigurations.kid.activationPackage
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Clone nix-config from earthnet
+        run: git clone --depth 1 "$REPO" .
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: flake-lock
+
+      # must run before the nix installer; carves runner disk into a big /nix volume
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        uses: wimpysworld/nothing-but-nix@main
+        with:
+          hatchet-protocol: rampage
+
+      - name: Free disk space (macOS)
+        if: runner.os == 'macOS'
+        run: sudo rm -rf /Applications/Xcode_*.app ~/Library/Developer/CoreSimulator
+
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = http://runner03.netbird.selfhosted:8080/earthnet?priority=43
+            extra-trusted-public-keys = earthnet:rXBP0a9ZgPo2Xlaa/mGp66WMJ8HMSz1UZcUczOZwhL0=
+            fallback = true
+            connect-timeout = 5
+
+      - name: Install netbird (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install netbirdio/tap/netbird
+          sudo netbird service install
+          sudo netbird service start
+
+      - name: Install netbird (Linux)
+        if: runner.os == 'Linux'
+        run: curl -fsSL https://pkgs.netbird.io/install.sh | sh
+
+      - name: Join netbird and wait for attic
+        env:
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+        run: |
+          sudo netbird up --setup-key "$NETBIRD_SETUP_KEY"
+          for _ in $(seq 1 30); do
+            curl -fsS -m 2 http://runner03.netbird.selfhosted:8080/earthnet/nix-cache-info >/dev/null && exit 0
+            sleep 2
+          done
+          echo "attic unreachable via netbird" >&2
+          sudo netbird status
+          exit 1
+
+      - name: Build
+        run: nix build ${{ matrix.targets }}
+
+      - name: Push to attic
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+        run: |
+          nix run nixpkgs#attic-client -- login earthnet http://runner03.netbird.selfhosted:8080 "$ATTIC_TOKEN"
+          nix run nixpkgs#attic-client -- push earthnet result*
+
+  commit:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: flake-lock
+
+      - name: Push lock file to earthnet
+        env:
+          EARTHNET_SSH_KEY: ${{ secrets.EARTHNET_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EARTHNET_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan git.earthnet.ch >> ~/.ssh/known_hosts
+          git clone --depth 1 ssh://git@git.earthnet.ch/simon.beck/nix-config.git repo
+          cp flake.lock repo/flake.lock
+          cd repo
+          if git diff --quiet flake.lock; then
+            echo "flake.lock unchanged, nothing to push"
+            exit 0
+          fi
+          git config user.email "bot@earthnet.ch"
+          git config user.name "Forgejo Bot"
+          git commit -m "flake.lock: Update" flake.lock
+          git push
+
+      # workflow-only repo has no commits; without this GitHub disables the cron after 60 days
+      - uses: gautamkrishnar/keepalive-workflow@v2
