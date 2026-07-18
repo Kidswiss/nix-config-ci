@@ -81,13 +81,15 @@ jobs:
 
       - name: Install netbird (Linux)
         if: runner.os == 'Linux'
-        run: curl -fsSL https://pkgs.netbird.io/install.sh | sh
+        # USE_BIN_INSTALL: static binary, no apt — rampage purges packages in
+        # the background and holds the dpkg lock
+        run: curl -fsSL https://pkgs.netbird.io/install.sh | USE_BIN_INSTALL=true sh
 
       - name: Join netbird and wait for attic
         env:
           NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
         run: |
-          sudo netbird up --setup-key "$NETBIRD_SETUP_KEY"
+          sudo netbird up --setup-key "$NETBIRD_SETUP_KEY" --management-url https://netbird.earthnet.ch:443
           for _ in $(seq 1 30); do
             curl -fsS -m 2 http://runner03.netbird.selfhosted:8080/earthnet/nix-cache-info >/dev/null && exit 0
             sleep 2
