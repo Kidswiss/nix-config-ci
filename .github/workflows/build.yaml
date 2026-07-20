@@ -1,7 +1,5 @@
 name: update-and-build
 on:
-  schedule:
-    - cron: "0 22 * * *"
   workflow_dispatch:
 
 concurrency:
