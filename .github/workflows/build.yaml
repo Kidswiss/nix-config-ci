@@ -65,8 +65,8 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           extra-conf: |
-            extra-substituters = http://runner03.netbird.selfhosted:8080/earthnet?priority=43
-            extra-trusted-public-keys = earthnet:rXBP0a9ZgPo2Xlaa/mGp66WMJ8HMSz1UZcUczOZwhL0=
+            extra-substituters = http://runner03.netbird.selfhosted:8080/earthnet?priority=43 https://helix.cachix.org?priority=44
+            extra-trusted-public-keys = earthnet:rXBP0a9ZgPo2Xlaa/mGp66WMJ8HMSz1UZcUczOZwhL0= helix.cachix.org-1:ejp9KQpR1FBI2onstMQ34yogDm4OgU2ru6lIwPvuCVs=
             fallback = true
             connect-timeout = 5
 
